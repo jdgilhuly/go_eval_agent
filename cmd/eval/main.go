@@ -7,6 +7,7 @@ import (
 
 	"github.com/jdgilhuly/go_eval_agent/pkg/config"
 	"github.com/jdgilhuly/go_eval_agent/pkg/prompt"
+	"github.com/jdgilhuly/go_eval_agent/pkg/suite"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -129,7 +130,26 @@ var listSuitesCmd = &cobra.Command{
 	Use:   "suites",
 	Short: "List available eval suites",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("eval list suites: not yet implemented")
+		dir, _ := cmd.Flags().GetString("dir")
+		suiteDir := filepath.Join(dir, "suites")
+
+		suites, err := suite.LoadDir(suiteDir)
+		if err != nil {
+			return fmt.Errorf("loading suites from %s: %w", suiteDir, err)
+		}
+
+		if len(suites) == 0 {
+			fmt.Println("No eval suites found.")
+			return nil
+		}
+
+		for _, s := range suites {
+			desc := s.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			fmt.Printf("  %-20s %-40s (%d cases)\n", s.Name, desc, len(s.Cases))
+		}
 		return nil
 	},
 }
@@ -144,7 +164,28 @@ var validateCmd = &cobra.Command{
 Validates YAML syntax, required fields, judge references, and
 prompt template variables.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("eval validate: not yet implemented")
+		suitePath, _ := cmd.Flags().GetString("suite")
+		if suitePath != "" {
+			s, err := suite.Load(suitePath)
+			if err != nil {
+				return fmt.Errorf("loading suite: %w", err)
+			}
+			if err := s.Validate(); err != nil {
+				return fmt.Errorf("suite validation failed: %w", err)
+			}
+			fmt.Printf("Suite %q is valid (%d cases).\n", s.Name, len(s.Cases))
+		}
+
+		cfgPath, _ := cmd.Flags().GetString("config")
+		cfg, err := config.LoadOrDefault(cfgPath)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("config validation failed: %w", err)
+		}
+		fmt.Printf("Config %q is valid.\n", cfgPath)
+
 		return nil
 	},
 }
