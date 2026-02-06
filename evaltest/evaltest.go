@@ -5,48 +5,104 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"regexp"
 	"testing"
 	"time"
 
+	"github.com/jdgilhuly/go_eval_agent/pkg/config"
 	"github.com/jdgilhuly/go_eval_agent/pkg/mock"
 	"github.com/jdgilhuly/go_eval_agent/pkg/provider"
 	"github.com/jdgilhuly/go_eval_agent/pkg/trace"
 )
 
-// Config configures the eval test harness.
-type Config struct {
-	Provider   provider.Provider
-	System     string
-	Tools      []provider.Tool
-	Timeout    time.Duration
-	ResultFile string // optional: write results to this JSON file
+// maxToolIterations is the maximum number of tool-call round-trips per case
+// to prevent infinite loops.
+const maxToolIterations = 20
+
+// Option configures a Harness.
+type Option func(*Harness)
+
+// WithProvider sets a custom provider on the harness. If not set, a default
+// echo provider is used that returns the user input as output.
+func WithProvider(p provider.Provider) Option {
+	return func(h *Harness) {
+		h.provider = p
+	}
 }
 
-// Harness ties eval cases to a *testing.T for standard go test integration.
-type Harness struct {
-	t       *testing.T
-	cfg     Config
-	results []CaseResult
+// WithConfig sets the eval framework config on the harness.
+func WithConfig(c *config.Config) Option {
+	return func(h *Harness) {
+		h.config = c
+	}
+}
+
+// WithSystem sets the system prompt used for all cases in this harness.
+func WithSystem(system string) Option {
+	return func(h *Harness) {
+		h.system = system
+	}
+}
+
+// WithTools sets the tools available to the agent for all cases.
+func WithTools(tools []provider.Tool) Option {
+	return func(h *Harness) {
+		h.tools = tools
+	}
+}
+
+// WithTimeout sets the per-case timeout. Defaults to 30 seconds.
+func WithTimeout(d time.Duration) Option {
+	return func(h *Harness) {
+		h.timeout = d
+	}
+}
+
+// WithResultFile configures the harness to write test results to a JSON file
+// when all cases are complete.
+func WithResultFile(path string) Option {
+	return func(h *Harness) {
+		h.resultFile = path
+	}
 }
 
 // CaseResult captures the outcome of a single eval test case.
 type CaseResult struct {
-	Name          string              `json:"name"`
-	Output        string              `json:"output"`
-	ToolCalls     []trace.ToolCallTrace `json:"tool_calls"`
-	Duration      time.Duration       `json:"duration"`
-	Error         string              `json:"error,omitempty"`
+	Name      string                `json:"name"`
+	Output    string                `json:"output"`
+	ToolCalls []trace.ToolCallTrace `json:"tool_calls"`
+	Duration  time.Duration         `json:"duration"`
+	Error     string                `json:"error,omitempty"`
 }
 
-// New creates a Harness tied to the given testing.T.
-func New(t *testing.T, cfg Config) *Harness {
+// Harness provides the scaffolding for running eval cases as standard Go
+// tests. It is tied to a *testing.T and manages shared configuration such
+// as the LLM provider.
+type Harness struct {
+	t          *testing.T
+	provider   provider.Provider
+	config     *config.Config
+	system     string
+	tools      []provider.Tool
+	timeout    time.Duration
+	resultFile string
+	results    []CaseResult
+}
+
+// New creates a Harness bound to the given *testing.T. Options can be used
+// to override the provider, config, and other settings. Sensible defaults
+// are applied for anything not configured.
+func New(t *testing.T, opts ...Option) *Harness {
 	t.Helper()
-	if cfg.Timeout == 0 {
-		cfg.Timeout = 30 * time.Second
+	h := &Harness{
+		t:        t,
+		provider: echoProvider{},
+		config:   config.Default(),
+		timeout:  30 * time.Second,
 	}
-	h := &Harness{t: t, cfg: cfg}
-	if cfg.ResultFile != "" {
+	for _, opt := range opts {
+		opt(h)
+	}
+	if h.resultFile != "" {
 		t.Cleanup(func() {
 			h.writeResults()
 		})
@@ -54,7 +110,9 @@ func New(t *testing.T, cfg Config) *Harness {
 	return h
 }
 
-// Run runs a named eval case as a subtest.
+// Run executes a named eval case as a subtest. The provided function receives
+// a *TestCase with helpers for mocking tools, sending input, and making
+// assertions.
 func (h *Harness) Run(name string, fn func(tc *TestCase)) {
 	h.t.Helper()
 	h.t.Run(name, func(t *testing.T) {
@@ -76,46 +134,45 @@ func (h *Harness) writeResults() {
 		h.t.Errorf("evaltest: failed to marshal results: %v", err)
 		return
 	}
-	if err := os.WriteFile(h.cfg.ResultFile, data, 0o644); err != nil {
-		h.t.Errorf("evaltest: failed to write results to %s: %v", h.cfg.ResultFile, err)
+	if err := os.WriteFile(h.resultFile, data, 0o644); err != nil {
+		h.t.Errorf("evaltest: failed to write results to %s: %v", h.resultFile, err)
 	}
 }
 
 // TestCase provides methods to configure and assert a single eval case.
 type TestCase struct {
-	t        *testing.T
-	harness  *Harness
-	name     string
-	registry *mock.MockRegistry
-	output   string
-	trace    *trace.AgentTrace
-	executed bool
+	t         *testing.T
+	harness   *Harness
+	name      string
+	registry  *mock.MockRegistry
+	output    string
+	trace     *trace.AgentTrace
+	toolCalls []provider.ToolCall
+	executed  bool
 }
 
-// MockTool registers a mock tool that returns the given response.
-func (tc *TestCase) MockTool(name, response string) {
+// MockTool registers mock responses for a tool. Responses are returned in
+// order; the last response is repeated once all sequential responses are
+// consumed.
+func (tc *TestCase) MockTool(name string, responses ...string) {
 	tc.t.Helper()
-	tc.registry.Register(mock.MockConfig{
-		ToolName:        name,
-		DefaultResponse: &mock.MockResponse{Content: response},
-	})
-}
-
-// MockToolSequence registers a mock tool with sequential responses.
-func (tc *TestCase) MockToolSequence(name string, responses []string) {
-	tc.t.Helper()
-	mrs := make([]mock.MockResponse, len(responses))
+	mockResponses := make([]mock.MockResponse, len(responses))
 	for i, r := range responses {
-		mrs[i] = mock.MockResponse{Content: r}
+		mockResponses[i] = mock.MockResponse{Content: r}
 	}
-	tc.registry.Register(mock.MockConfig{
+	cfg := mock.MockConfig{
 		ToolName:  name,
-		Responses: mrs,
-	})
+		Responses: mockResponses,
+	}
+	if len(responses) > 0 {
+		last := mock.MockResponse{Content: responses[len(responses)-1]}
+		cfg.DefaultResponse = &last
+	}
+	tc.registry.Register(cfg)
 }
 
-// MockToolError registers a mock tool that returns an error.
-func (tc *TestCase) MockToolError(name, errMsg string) {
+// MockToolError registers a mock for a tool that always returns an error.
+func (tc *TestCase) MockToolError(name string, errMsg string) {
 	tc.t.Helper()
 	tc.registry.Register(mock.MockConfig{
 		ToolName:        name,
@@ -123,13 +180,14 @@ func (tc *TestCase) MockToolError(name, errMsg string) {
 	})
 }
 
-// Input sets the user message and executes the agent loop against the
-// configured provider and mocks.
-func (tc *TestCase) Input(text string) {
+// Input sends the user message to the agent via the configured provider and
+// executes the agent loop (processing tool calls via mocks). It returns the
+// final agent output text.
+func (tc *TestCase) Input(text string) string {
 	tc.t.Helper()
 
-	cfg := tc.harness.cfg
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
+	h := tc.harness
+	ctx, cancel := context.WithTimeout(context.Background(), h.timeout)
 	defer cancel()
 
 	tr := trace.New()
@@ -140,20 +198,19 @@ func (tc *TestCase) Input(text string) {
 	}
 	tr.AddMessage("user", text)
 
-	const maxIterations = 20
-	for i := 0; i < maxIterations; i++ {
+	for i := 0; i < maxToolIterations; i++ {
 		req := &provider.Request{
-			System:   cfg.System,
+			System:   h.system,
 			Messages: messages,
-			Tools:    cfg.Tools,
+			Tools:    h.tools,
 		}
 
-		resp, err := cfg.Provider.Complete(ctx, req)
+		resp, err := h.provider.Complete(ctx, req)
 		if err != nil {
 			tc.t.Errorf("provider error: %v", err)
 			tr.Finish()
 			tc.recordResult(err.Error())
-			return
+			return ""
 		}
 
 		tr.AddUsage(resp.Usage.InputTokens, resp.Usage.OutputTokens)
@@ -164,9 +221,10 @@ func (tc *TestCase) Input(text string) {
 			tc.executed = true
 			tr.Finish()
 			tc.recordResult("")
-			return
+			return tc.output
 		}
 
+		tc.toolCalls = append(tc.toolCalls, resp.ToolCalls...)
 		tr.AddMessage("assistant", resp.Content)
 		messages = append(messages, provider.Message{
 			Role:      "assistant",
@@ -208,6 +266,7 @@ func (tc *TestCase) Input(text string) {
 	tc.t.Error("agent loop exceeded maximum iterations")
 	tr.Finish()
 	tc.recordResult("max iterations exceeded")
+	return ""
 }
 
 func (tc *TestCase) recordResult(errMsg string) {
@@ -236,111 +295,13 @@ func (tc *TestCase) Output() string {
 	return tc.output
 }
 
-// --- Assertion helpers ---
-
-// AssertOutputContains asserts that the output contains the given substring.
-func (tc *TestCase) AssertOutputContains(substr string) {
-	tc.t.Helper()
-	if !tc.executed {
-		tc.t.Error("AssertOutputContains called before Input()")
-		return
-	}
-	if !contains(tc.output, substr) {
-		tc.t.Errorf("output does not contain %q\n  output: %s", substr, truncate(tc.output, 200))
-	}
+// Trace returns the agent execution trace for inspection.
+func (tc *TestCase) Trace() *trace.AgentTrace {
+	return tc.trace
 }
 
-// AssertOutputMatches asserts that the output matches the given regex pattern.
-func (tc *TestCase) AssertOutputMatches(pattern string) {
-	tc.t.Helper()
-	if !tc.executed {
-		tc.t.Error("AssertOutputMatches called before Input()")
-		return
-	}
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		tc.t.Errorf("invalid regex pattern %q: %v", pattern, err)
-		return
-	}
-	if !re.MatchString(tc.output) {
-		tc.t.Errorf("output does not match pattern %q\n  output: %s", pattern, truncate(tc.output, 200))
-	}
-}
-
-// AssertToolCalled asserts that the named tool was called at least once.
-func (tc *TestCase) AssertToolCalled(toolName string) {
-	tc.t.Helper()
-	if tc.trace == nil {
-		tc.t.Error("AssertToolCalled called before Input()")
-		return
-	}
-	for _, call := range tc.trace.GetToolCalls() {
-		if call.ToolName == toolName {
-			return
-		}
-	}
-	tc.t.Errorf("tool %q was not called", toolName)
-}
-
-// AssertToolNotCalled asserts that the named tool was never called.
-func (tc *TestCase) AssertToolNotCalled(toolName string) {
-	tc.t.Helper()
-	if tc.trace == nil {
-		tc.t.Error("AssertToolNotCalled called before Input()")
-		return
-	}
-	for _, call := range tc.trace.GetToolCalls() {
-		if call.ToolName == toolName {
-			tc.t.Errorf("tool %q was called but should not have been", toolName)
-			return
-		}
-	}
-}
-
-// AssertToolCalledWith asserts the named tool was called with parameters
-// that are a superset of the given params (subset match).
-func (tc *TestCase) AssertToolCalledWith(toolName string, params map[string]interface{}) {
-	tc.t.Helper()
-	if tc.trace == nil {
-		tc.t.Error("AssertToolCalledWith called before Input()")
-		return
-	}
-	for _, call := range tc.trace.GetToolCalls() {
-		if call.ToolName == toolName && isSubset(params, call.Parameters) {
-			return
-		}
-	}
-	tc.t.Errorf("tool %q was not called with params %v", toolName, params)
-}
-
-// --- helpers ---
-
-func contains(s, substr string) bool {
-	return len(substr) == 0 || len(s) >= len(substr) && searchString(s, substr)
-}
-
-func searchString(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
-}
-
-func isSubset(subset, superset map[string]interface{}) bool {
-	for k, v := range subset {
-		sv, ok := superset[k]
-		if !ok || fmt.Sprintf("%v", v) != fmt.Sprintf("%v", sv) {
-			return false
-		}
-	}
-	return true
-}
-
-func truncate(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+// ToolCallRecords returns all tool calls made by the provider during
+// the agent loop.
+func (tc *TestCase) ToolCallRecords() []provider.ToolCall {
+	return tc.toolCalls
 }

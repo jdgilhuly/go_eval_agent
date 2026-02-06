@@ -16,7 +16,7 @@ func TestHarness_SimpleOutput(t *testing.T) {
 		Usage:      provider.Usage{InputTokens: 10, OutputTokens: 5},
 	})
 
-	h := New(t, Config{Provider: fp, System: "Be helpful."})
+	h := New(t, WithProvider(fp), WithSystem("Be helpful."))
 	h.Run("greeting", func(tc *TestCase) {
 		tc.Input("Say hello")
 		tc.AssertOutputContains("Hello")
@@ -26,7 +26,6 @@ func TestHarness_SimpleOutput(t *testing.T) {
 
 func TestHarness_ToolCallFlow(t *testing.T) {
 	fp := NewMockProvider(
-		// First response: model requests a tool call
 		provider.Response{
 			Content: "",
 			ToolCalls: []provider.ToolCall{
@@ -35,7 +34,6 @@ func TestHarness_ToolCallFlow(t *testing.T) {
 			StopReason: "tool_use",
 			Usage:      provider.Usage{InputTokens: 20, OutputTokens: 10},
 		},
-		// Second response: model returns final text
 		provider.Response{
 			Content:    "The file contains Go code.",
 			StopReason: "end_turn",
@@ -43,7 +41,7 @@ func TestHarness_ToolCallFlow(t *testing.T) {
 		},
 	)
 
-	h := New(t, Config{Provider: fp, System: "You are a code assistant."})
+	h := New(t, WithProvider(fp), WithSystem("You are a code assistant."))
 	h.Run("tool-use", func(tc *TestCase) {
 		tc.MockTool("read_file", "package main\n\nfunc main() {}")
 		tc.Input("Read the file")
@@ -70,9 +68,9 @@ func TestHarness_MockToolSequence(t *testing.T) {
 		},
 	)
 
-	h := New(t, Config{Provider: fp})
+	h := New(t, WithProvider(fp))
 	h.Run("sequence", func(tc *TestCase) {
-		tc.MockToolSequence("search", []string{"result1", "result2"})
+		tc.MockTool("search", "result1", "result2")
 		tc.Input("Search twice")
 		tc.AssertOutputContains("two results")
 	})
@@ -90,7 +88,7 @@ func TestHarness_MockToolError(t *testing.T) {
 		},
 	)
 
-	h := New(t, Config{Provider: fp})
+	h := New(t, WithProvider(fp))
 	h.Run("error-mock", func(tc *TestCase) {
 		tc.MockToolError("write_file", "permission denied")
 		tc.Input("Try to write")
@@ -108,7 +106,7 @@ func TestHarness_ResultFile(t *testing.T) {
 		StopReason: "end_turn",
 	})
 
-	h := New(t, Config{Provider: fp, ResultFile: resultPath})
+	h := New(t, WithProvider(fp), WithResultFile(resultPath))
 	h.Run("result-output", func(tc *TestCase) {
 		tc.Input("Do something")
 		tc.AssertOutputContains("done")
@@ -135,12 +133,27 @@ func TestHarness_OutputMethod(t *testing.T) {
 		StopReason: "end_turn",
 	})
 
-	h := New(t, Config{Provider: fp})
+	h := New(t, WithProvider(fp))
 	h.Run("output-access", func(tc *TestCase) {
 		tc.Input("What is the answer?")
 		out := tc.Output()
 		if out != "the answer is 42" {
 			t.Errorf("output = %q, want %q", out, "the answer is 42")
+		}
+	})
+}
+
+func TestHarness_InputReturnsOutput(t *testing.T) {
+	fp := NewMockProvider(provider.Response{
+		Content:    "returned value",
+		StopReason: "end_turn",
+	})
+
+	h := New(t, WithProvider(fp))
+	h.Run("input-return", func(tc *TestCase) {
+		got := tc.Input("test")
+		if got != "returned value" {
+			t.Errorf("Input() returned %q, want %q", got, "returned value")
 		}
 	})
 }
@@ -151,7 +164,7 @@ func TestHarness_MultipleSubtests(t *testing.T) {
 		provider.Response{Content: "beta", StopReason: "end_turn"},
 	)
 
-	h := New(t, Config{Provider: fp})
+	h := New(t, WithProvider(fp))
 	h.Run("first", func(tc *TestCase) {
 		tc.Input("Give me alpha")
 		tc.AssertOutputContains("alpha")
@@ -159,6 +172,37 @@ func TestHarness_MultipleSubtests(t *testing.T) {
 	h.Run("second", func(tc *TestCase) {
 		tc.Input("Give me beta")
 		tc.AssertOutputContains("beta")
+	})
+}
+
+func TestMockProvider(t *testing.T) {
+	mp := NewMockProvider(
+		provider.Response{Content: "first", StopReason: "end_turn"},
+		provider.Response{Content: "second", StopReason: "end_turn"},
+	)
+
+	h := New(t, WithProvider(mp))
+	h.Run("mock-provider-first", func(tc *TestCase) {
+		out := tc.Input("msg1")
+		if out != "first" {
+			t.Errorf("expected %q, got %q", "first", out)
+		}
+	})
+	h.Run("mock-provider-second", func(tc *TestCase) {
+		out := tc.Input("msg2")
+		if out != "second" {
+			t.Errorf("expected %q, got %q", "second", out)
+		}
+	})
+}
+
+func TestEchoProvider(t *testing.T) {
+	h := New(t)
+	h.Run("echo", func(tc *TestCase) {
+		out := tc.Input("echo this back")
+		if out != "echo this back" {
+			t.Errorf("expected echo, got %q", out)
+		}
 	})
 }
 
@@ -189,4 +233,16 @@ func TestScoreMatchers(t *testing.T) {
 	if atLeast.Match(0.3) {
 		t.Error("ScoreAtLeast(0.5) should not match 0.3")
 	}
+}
+
+func TestAssertToolNotCalled_Negative(t *testing.T) {
+	fp := NewMockProvider(
+		provider.Response{Content: "no tools used", StopReason: "end_turn"},
+	)
+
+	h := New(t, WithProvider(fp))
+	h.Run("no-tools", func(tc *TestCase) {
+		tc.Input("Just respond")
+		tc.AssertToolNotCalled("any_tool")
+	})
 }
