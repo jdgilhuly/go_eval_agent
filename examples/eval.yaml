@@ -1,0 +1,29 @@
+# eval.yaml - Main configuration for the Go Agent Eval Framework.
+#
+# This file configures LLM providers, concurrency, timeouts, and output
+# directories. Run 'eval validate --config eval.yaml' to check for errors.
+
+# Provider configurations. Each provider needs a model name and an
+# environment variable containing the API key.
+providers:
+  anthropic:
+    model: "claude-sonnet-4-5-20250929"
+    api_key_env: "ANTHROPIC_API_KEY"
+  openai:
+    model: "gpt-4o"
+    api_key_env: "OPENAI_API_KEY"
+    base_url: "https://api.openai.com/v1"
+
+# Maximum number of eval cases to run in parallel.
+concurrency: 5
+
+# Per-case timeout. Cases exceeding this duration are marked as errors.
+timeout: 60s
+
+# Directory where JSON result files are written after each run.
+output_dir: "results/"
+
+# Retry configuration for transient API errors.
+retry:
+  max_retries: 3
+  base_delay: 1s

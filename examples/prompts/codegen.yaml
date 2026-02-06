@@ -1,0 +1,75 @@
+# codegen.yaml - Prompt template for a backend code generation agent.
+#
+# This prompt variant provides a system prompt for code generation tasks,
+# a user prompt template with variable interpolation, and tool definitions
+# the agent can use during evaluation.
+
+# Unique name for this prompt variant. Referenced by suite files.
+name: "codegen"
+
+# Optional description.
+description: "Backend code generation agent with file read/write tools"
+
+# System prompt sent to the LLM.
+system: |
+  You are an expert Go backend developer. Your task is to write clean,
+  idiomatic Go code that is well-tested and production-ready.
+
+  When asked to implement something:
+  1. Read existing files if needed to understand context
+  2. Write the implementation
+  3. Explain your design decisions briefly
+
+  Always handle errors explicitly. Prefer simplicity over cleverness.
+
+# User prompt template. Variables use {{.VarName}} syntax and are
+# populated from the eval case's input map.
+user: |
+  {{.task}}
+
+  {{if .context}}Additional context: {{.context}}{{end}}
+
+# Tool definitions available to the agent during evaluation.
+# These are mocked during eval runs - the agent "thinks" they are real.
+tools:
+  - name: "read_file"
+    description: "Read the contents of a file at the given path"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "Absolute file path to read"
+      required:
+        - "path"
+
+  - name: "write_file"
+    description: "Write content to a file at the given path"
+    parameters:
+      type: "object"
+      properties:
+        path:
+          type: "string"
+          description: "Absolute file path to write"
+        content:
+          type: "string"
+          description: "File content to write"
+      required:
+        - "path"
+        - "content"
+
+  - name: "run_tests"
+    description: "Run Go tests in the given directory"
+    parameters:
+      type: "object"
+      properties:
+        dir:
+          type: "string"
+          description: "Directory containing test files"
+      required:
+        - "dir"
+
+# Optional metadata for categorization and filtering.
+metadata:
+  category: "codegen"
+  language: "go"
