@@ -400,3 +400,57 @@ func TestToolCallJudge_EmptyExpectations(t *testing.T) {
 		t.Error("expected pass with no expectations")
 	}
 }
+
+// --- Human Review Judge ---
+
+func TestHumanReviewJudge_DefaultReason(t *testing.T) {
+	j := &HumanReviewJudge{}
+	r, err := j.Evaluate(Input{Output: "anything"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Pass {
+		t.Error("expected fail (review cases should not pass)")
+	}
+	if r.Score != 0 {
+		t.Errorf("score = %f, want 0", r.Score)
+	}
+	if r.Reason != "review" {
+		t.Errorf("reason = %q, want %q", r.Reason, "review")
+	}
+}
+
+func TestHumanReviewJudge_CustomReason(t *testing.T) {
+	j := &HumanReviewJudge{Reason: "needs expert review"}
+	r, err := j.Evaluate(Input{Output: "anything"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Reason != "needs expert review" {
+		t.Errorf("reason = %q, want %q", r.Reason, "needs expert review")
+	}
+}
+
+func TestHumanReviewJudge_Name(t *testing.T) {
+	j := &HumanReviewJudge{}
+	if j.Name() != "human_review" {
+		t.Errorf("name = %q, want %q", j.Name(), "human_review")
+	}
+}
+
+func TestHumanReviewJudge_CompositeIntegration(t *testing.T) {
+	// When used in composite scoring, review judge should trigger "review" status.
+	scorer := NewCompositeScorer(0.5)
+	result := scorer.Score(
+		Input{Output: "hello"},
+		[]JudgeConfig{
+			{Judge: &HumanReviewJudge{}, Weight: 1.0},
+		},
+	)
+	if result.Status != StatusReview {
+		t.Errorf("status = %q, want %q", result.Status, StatusReview)
+	}
+	if result.Pass {
+		t.Error("review status should not pass")
+	}
+}

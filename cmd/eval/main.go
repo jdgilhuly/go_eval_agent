@@ -6,7 +6,10 @@ import (
 	"path/filepath"
 
 	"github.com/jdgilhuly/go_eval_agent/pkg/config"
+	"github.com/jdgilhuly/go_eval_agent/pkg/diff"
 	"github.com/jdgilhuly/go_eval_agent/pkg/prompt"
+	"github.com/jdgilhuly/go_eval_agent/pkg/result"
+	"github.com/jdgilhuly/go_eval_agent/pkg/review"
 	"github.com/jdgilhuly/go_eval_agent/pkg/suite"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
@@ -69,7 +72,28 @@ Shows score regressions, improvements, and unchanged cases.
 Useful for evaluating prompt changes or model upgrades.`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("eval diff: not yet implemented")
+		a, err := result.LoadSummary(args[0])
+		if err != nil {
+			return fmt.Errorf("loading run A: %w", err)
+		}
+		b, err := result.LoadSummary(args[1])
+		if err != nil {
+			return fmt.Errorf("loading run B: %w", err)
+		}
+
+		threshold, _ := cmd.Flags().GetFloat64("threshold")
+		dr := diff.Compare(a, b, threshold)
+
+		format, _ := cmd.Flags().GetString("format")
+		if format == "json" {
+			data, err := dr.JSON()
+			if err != nil {
+				return fmt.Errorf("serializing diff: %w", err)
+			}
+			fmt.Println(string(data))
+		} else {
+			dr.PrintTable(os.Stdout)
+		}
 		return nil
 	},
 }
@@ -85,7 +109,31 @@ Flagged cases include failures, low-confidence judge scores, and
 cases marked for human review.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("eval review: not yet implemented")
+		summary, err := result.LoadSummary(args[0])
+		if err != nil {
+			return fmt.Errorf("loading run results: %w", err)
+		}
+
+		filterStr, _ := cmd.Flags().GetString("filter")
+		filter := review.ParseFilter(filterStr)
+
+		r := &review.Reviewer{
+			In:  os.Stdin,
+			Out: os.Stdout,
+		}
+
+		reviewed, err := r.Review(summary, filter)
+		if err != nil {
+			return fmt.Errorf("review session: %w", err)
+		}
+
+		if reviewed > 0 {
+			if err := summary.Save(args[0]); err != nil {
+				return fmt.Errorf("saving updated results: %w", err)
+			}
+			fmt.Printf("\nReviewed %d cases. Results saved to %s\n", reviewed, args[0])
+		}
+
 		return nil
 	},
 }
@@ -319,7 +367,7 @@ func init() {
 	diffCmd.Flags().String("format", "table", "Output format: table, json, markdown")
 
 	// review command flags
-	reviewCmd.Flags().String("filter", "", "Filter cases: failed, flagged, all")
+	reviewCmd.Flags().String("filter", "review", "Filter cases: review, fail, all")
 
 	// list command flags
 	listCmd.PersistentFlags().String("dir", ".", "Base directory to search")

@@ -44,6 +44,7 @@ type CaseResult struct {
 	Prompt        string        `json:"prompt"`
 	Model         string        `json:"model"`
 	FinalResponse string        `json:"final_response"`
+	Status        string        `json:"status"` // "pass", "fail", "review", "error"
 	Score         float64       `json:"score"`
 	Pass          bool          `json:"pass"`
 	Error         string        `json:"error,omitempty"`
