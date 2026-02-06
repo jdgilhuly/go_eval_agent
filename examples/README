@@ -1,0 +1,4 @@
+Example configurations and eval suites for the Go Agent Eval Framework.
+
+Use 'eval init' to generate a starter project, or copy files from
+this directory as a starting point.
