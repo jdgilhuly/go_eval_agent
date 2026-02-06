@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/jdgilhuly/go_eval_agent/pkg/config"
+	"github.com/jdgilhuly/go_eval_agent/pkg/prompt"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +37,21 @@ var runCmd = &cobra.Command{
 Runs all cases in the suite, applies judges, and outputs results.
 Results are saved to a JSON file for later comparison with 'eval diff'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		cfgPath, _ := cmd.Flags().GetString("config")
+		cfg, err := config.LoadOrDefault(cfgPath)
+		if err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		if err := cfg.Validate(); err != nil {
+			return fmt.Errorf("invalid config: %w", err)
+		}
+
+		verbose, _ := cmd.Flags().GetBool("verbose")
+		if verbose {
+			fmt.Printf("Config loaded: concurrency=%d timeout=%s output=%s\n",
+				cfg.Concurrency, cfg.Timeout, cfg.OutputDir)
+		}
+
 		fmt.Println("eval run: not yet implemented")
 		return nil
 	},
@@ -84,7 +101,26 @@ var listPromptsCmd = &cobra.Command{
 	Use:   "prompts",
 	Short: "List available prompt templates",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("eval list prompts: not yet implemented")
+		dir, _ := cmd.Flags().GetString("dir")
+		promptDir := filepath.Join(dir, "prompts")
+
+		prompts, err := prompt.LoadDir(promptDir)
+		if err != nil {
+			return fmt.Errorf("loading prompts from %s: %w", promptDir, err)
+		}
+
+		if len(prompts) == 0 {
+			fmt.Println("No prompt templates found.")
+			return nil
+		}
+
+		for _, p := range prompts {
+			desc := p.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			fmt.Printf("  %-20s %s\n", p.Name, desc)
+		}
 		return nil
 	},
 }
