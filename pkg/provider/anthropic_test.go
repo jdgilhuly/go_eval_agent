@@ -376,7 +376,7 @@ func TestEstimateCost(t *testing.T) {
 		},
 		{
 			name:  "unknown model",
-			model: "gpt-4",
+			model: "unknown-model-xyz",
 			usage: Usage{InputTokens: 1000, OutputTokens: 1000},
 			want:  0,
 		},

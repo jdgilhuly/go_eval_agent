@@ -20,6 +20,19 @@ var pricing = map[string]modelPricing{
 	// Claude 4 family
 	"claude-sonnet-4-5-20250929": {InputPerMillion: 3.0, OutputPerMillion: 15.0},
 	"claude-opus-4-6":            {InputPerMillion: 15.0, OutputPerMillion: 75.0},
+
+	// OpenAI GPT-4o family
+	"gpt-4o":      {InputPerMillion: 2.50, OutputPerMillion: 10.0},
+	"gpt-4o-mini": {InputPerMillion: 0.15, OutputPerMillion: 0.60},
+
+	// OpenAI GPT-4 family
+	"gpt-4-turbo": {InputPerMillion: 10.0, OutputPerMillion: 30.0},
+	"gpt-4":       {InputPerMillion: 30.0, OutputPerMillion: 60.0},
+
+	// OpenAI o-series
+	"o1":      {InputPerMillion: 15.0, OutputPerMillion: 60.0},
+	"o1-mini": {InputPerMillion: 3.0, OutputPerMillion: 12.0},
+	"o3-mini": {InputPerMillion: 1.10, OutputPerMillion: 4.40},
 }
 
 // EstimateCost returns the estimated USD cost for the given model and usage.
